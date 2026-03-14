@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="description" content="CipherLayer — Secure encrypted file vault with client-side AES-256-GCM encryption, controlled access, and blockchain-verified transfers." />
+  <title>CipherLayer — Secure Encrypted File Vault</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="matrix"></canvas>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- TOAST CONTAINER                                                     -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <div class="app-shell">
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- HEADER                                                             -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-icon">🔐</div>
+        <div class="brand-text">
+          <h1>CipherLayer</h1>
+          <p>Encrypted File Vault</p>
+        </div>
+        <span class="testnet-chip" id="testnetIndicator">Testnet</span>
+      </div>
+
+      <!-- WALLET CLUSTER -->
+      <div class="wallet-cluster" id="walletCluster">
+        <div id="walletDisconnected">
+          <button class="wallet-connect-btn" onclick="toggleWalletDropdown()">
+            <span class="wallet-dot disconnected"></span> Connect Wallet
+          </button>
+        </div>
+        <div id="walletConnected" class="hidden">
+          <button class="wallet-session-btn" onclick="toggleWalletDropdown()">
+            <span class="wallet-dot connected"></span>
+            <span id="walletLabel">Petra</span>
+            <span class="wallet-addr" id="walletAddr">0x71...A92F</span>
+            <span class="wallet-status-badge" id="walletStatusBadge">CONNECTED</span>
+          </button>
+        </div>
+        <div id="walletDropdown" class="wallet-dropdown hidden">
+          <div id="walletOptions">
+            <div class="wallet-dropdown-header">Select Wallet</div>
+            <button class="wallet-option" onclick="connectWallet('petra')">
+              <span>🔷</span> <span>Petra</span> <span class="wallet-chain">Aptos</span>
+            </button>
+            <button class="wallet-option" onclick="connectWallet('phantom')">
+              <span>👻</span> <span>Phantom</span> <span class="wallet-chain">Solana</span>
+            </button>
+            <button class="wallet-option" onclick="connectWallet('backpack')">
+              <span>🎒</span> <span>Backpack</span> <span class="wallet-chain">Multi</span>
+            </button>
+          </div>
+          <div id="walletSessionActions" class="hidden">
+            <div class="wallet-dropdown-header">Wallet Session</div>
+            <div class="wallet-session-info" id="walletSessionInfo"></div>
+            <div id="walletBalances" class="wallet-balances">
+              <div class="wallet-dropdown-header">Testnet Balances</div>
+              <div class="balance-row">
+                <span class="balance-label">APT</span>
+                <span class="balance-value" id="aptBalanceDisplay">--</span>
+                <span class="balance-status" id="aptStatusBadge"></span>
+              </div>
+              <div class="balance-row">
+                <span class="balance-label">ShelbyUSD</span>
+                <span class="balance-value" id="shelbyBalanceDisplay">--</span>
+                <span class="balance-status" id="shelbyStatusBadge"></span>
+              </div>
+              <div class="balance-faucets">
+                <a class="faucet-link" id="aptFaucetLink" href="#" target="_blank">APT Faucet →</a>
+                <a class="faucet-link" id="shelbyFaucetLink" href="#" target="_blank">Shelby Faucet →</a>
+              </div>
+            </div>
+            <button class="wallet-action" id="signSessionBtn" onclick="doSignSession()">Sign Session</button>
+            <button class="wallet-action" onclick="refreshBalances()">Refresh Balances</button>
+            <button class="wallet-action" onclick="copyWalletAddress()">Copy Address</button>
+            <button class="wallet-action wallet-action-danger" onclick="disconnectWallet()">Disconnect</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- NAVIGATION TABS                                                    -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <nav class="nav-tabs">
+      <button class="tab active" id="tab-upload" onclick="switchTab('upload')">Upload</button>
+      <button class="tab" id="tab-download" onclick="switchTab('download')">Download</button>
+      <button class="tab" id="tab-history" onclick="switchTab('history')">Vault</button>
+      <button class="tab" id="tab-inbox" onclick="switchTab('inbox')">Inbox</button>
+    </nav>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- UPLOAD TAB                                                         -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div id="upload-tab" class="tab-content">
+
+      <!-- Upload Readiness -->
+      <div id="uploadReadiness" class="upload-readiness hidden"></div>
+
+      <!-- Hero CTA -->
+      <div class="hero-cta">
+        <h2>Secure File Upload</h2>
+        <p>Encrypt files client-side, set access policies, and share them securely — no data leaves your browser unencrypted.</p>
+
+        <!-- 3-step guide -->
+        <div class="step-indicator" id="uploadSteps">
+          <div class="step-item active" id="step1">
+            <span class="step-num">1</span>
+            <span>Select file</span>
+          </div>
+          <div class="step-connector" id="stepConn1"></div>
+          <div class="step-item" id="step2">
+            <span class="step-num">2</span>
+            <span>Set access policy</span>
+          </div>
+          <div class="step-connector" id="stepConn2"></div>
+          <div class="step-item" id="step3">
+            <span class="step-num">3</span>
+            <span>Encrypt & share</span>
+          </div>
+        </div>
+
+        <div class="drop-zone" id="dropZone">
+          <div class="drop-zone-icon">📁</div>
+          <p class="drop-label">Drag & drop files here</p>
+          <p class="drop-sublabel">or click to browse · supports multiple files</p>
+          <input type="file" id="fileInput" hidden multiple />
+        </div>
+      </div>
+
+      <!-- File Queue -->
+      <div id="fileQueueContainer" class="file-queue-container hidden">
+        <div class="section-header">
+          <span>File Queue</span>
+          <button class="btn-xs" id="clearQueueBtn" onclick="clearQueue()">Clear All</button>
+        </div>
+        <div id="fileQueueList" class="file-queue-list"></div>
+      </div>
+
+      <!-- Expiration Policy -->
+      <div class="option-group" style="margin-top:4px;">
+        <label class="form-label">Expiration Policy</label>
+        <span class="form-hint">Decide how long your shared file remains accessible.</span>
+        <div class="option-pills" id="expirationOptions">
+          <button class="exp-btn active" data-value="never">Never</button>
+          <button class="exp-btn" data-value="1h">1 Hour</button>
+          <button class="exp-btn" data-value="1d">1 Day</button>
+          <button class="exp-btn" data-value="7d">7 Days</button>
+          <button class="exp-btn" data-value="one-download">One Download</button>
+        </div>
+      </div>
+
+      <!-- Access Mode -->
+      <div class="option-group">
+        <label class="form-label">Access Mode</label>
+        <span class="form-hint">Choose who can decrypt and access your file.</span>
+        <div class="option-pills" id="accessModeOptions">
+          <button class="exp-btn active" data-value="passphrase">Passphrase</button>
+          <button class="exp-btn" data-value="public">Public Link</button>
+          <button class="exp-btn" data-value="wallet-gated">Wallet-Gated</button>
+        </div>
+      </div>
+
+      <!-- Recipient Wallet (wallet-gated only) -->
+      <div id="recipientWalletGroup" class="form-group hidden">
+        <label class="form-label">Recipient Wallet <span class="form-hint">Only this wallet can decrypt</span></label>
+        <input type="text" id="recipientWallet" placeholder="Paste recipient wallet address..." />
+      </div>
+
+      <!-- Encryption Key -->
+      <div class="form-group" style="margin-top:8px;">
+        <label class="form-label">Encryption Key / Passphrase</label>
+        <span class="form-hint">Leave blank to auto-generate a secure passphrase.</span>
+        <div class="passphrase-row" style="margin-top:4px;">
+          <input type="password" id="uploadPassword" placeholder="Enter a custom passphrase or leave empty to auto-generate..." />
+          <div class="passphrase-actions">
+            <button class="btn-xs" id="togglePassVisibility" onclick="togglePassphraseVisibility()" title="Show/hide passphrase">👁</button>
+            <button class="btn-xs" onclick="generatePassphrase()" title="Generate random passphrase">🔄 Generate</button>
+            <button class="btn-xs" id="passphraseCopyBtn" onclick="copyPassphrase()" title="Copy to clipboard" style="display:none;">📋 Copy</button>
+          </div>
+        </div>
+        <div class="strength-bar-container" id="strengthContainer">
+          <div class="strength-bar" id="strengthBar"></div>
+        </div>
+        <span class="strength-label" id="strengthLabel"></span>
+      </div>
+
+      <button class="btn btn-primary" id="encryptUploadBtn" onclick="encryptAndUploadAll()">
+        🔒 Encrypt & Create Secure Link
+      </button>
+      <div id="uploadResults" class="upload-results"></div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- DOWNLOAD TAB                                                       -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div id="download-tab" class="tab-content hidden">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Retrieve Encrypted File</span></div>
+        <div style="display:flex;flex-direction:column;gap:16px;">
+          <div class="form-group">
+            <label class="form-label">File ID or Share Link</label>
+            <input type="text" id="downloadFileId" placeholder="Paste file ID or share link..." />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Decryption Key</label>
+            <input type="text" id="downloadKey" placeholder="Paste decryption key..." />
+          </div>
+          <button class="btn btn-primary" onclick="downloadAndDecrypt()">🔓 Decrypt & Download</button>
+        </div>
+      </div>
+
+      <div id="downloadResult" class="result-box hidden">
+        <h3>✓ Decryption Successful</h3>
+        <p id="downloadFileName"></p>
+        <div id="downloadIntegrity" class="integrity-result hidden">
+          <span class="integrity-badge verified">Integrity Verified (SHA-256)</span>
+          <div class="info-row">
+            <span>Hash</span>
+            <code id="downloadHash"></code>
+            <button class="copy-btn" onclick="copyTextContent('downloadHash')">Copy</button>
+          </div>
+        </div>
+        <button class="btn btn-secondary" id="saveBtn">Save File</button>
+      </div>
+
+      <div id="downloadError" class="result-box error-box hidden">
+        <h3>✗ Download Failed</h3>
+        <p id="downloadErrorMsg"></p>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- VAULT TAB                                                          -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div id="history-tab" class="tab-content hidden">
+
+      <!-- Vault Stats -->
+      <div class="card" id="vaultStatsPanel">
+        <div class="card-header"><span class="card-title">Vault Overview</span></div>
+        <div class="stats-grid" id="statsGrid"></div>
+      </div>
+
+      <!-- Search & Filter -->
+      <div class="vault-controls">
+        <input type="text" id="vaultSearch" placeholder="Search by name, ID, or link..." class="vault-search-input" />
+        <div class="vault-filter-row">
+          <div class="filter-group">
+            <button class="filter-btn active" data-filter="all" onclick="setVaultFilter('all', this)">All</button>
+            <button class="filter-btn" data-filter="active" onclick="setVaultFilter('active', this)">Active</button>
+            <button class="filter-btn" data-filter="expired" onclick="setVaultFilter('expired', this)">Expired</button>
+            <button class="filter-btn" data-filter="consumed" onclick="setVaultFilter('consumed', this)">Consumed</button>
+            <button class="filter-btn" data-filter="revoked" onclick="setVaultFilter('revoked', this)">Revoked</button>
+          </div>
+          <select id="vaultSort" class="vault-sort-select" onchange="renderHistory()">
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+            <option value="name">Name</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Records List -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Vault Records</span>
+          <span class="form-hint" id="historyCount"></span>
+        </div>
+        <div id="historyList" class="history-list">
+          <div class="empty-state">
+            <span class="empty-state-icon">🔐</span>
+            <p class="empty-state-title">No vault records yet</p>
+            <p class="empty-state-desc">Upload your first file to create an encrypted vault entry with controlled access.</p>
+            <button class="btn btn-primary" style="max-width:260px;margin:0 auto;" onclick="switchTab('upload')">Upload Secure File</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Protocol Events (collapsible) -->
+      <div class="access-log-panel">
+        <div class="collapsible-header" onclick="toggleCollapsible('eventsBody', this)">
+          <span>Protocol Events <span class="form-hint" id="logCount"></span></span>
+          <span class="collapsible-toggle">▼</span>
+        </div>
+        <div id="eventsBody" class="collapsible-body">
+          <div id="accessLogList" class="access-log-list">
+            <div class="empty-state" style="padding:24px;">
+              <p class="empty-state-title" style="font-size:13px;">No events logged</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dev Diagnostics (collapsible) -->
+      <div class="diagnostics-panel" id="diagnosticsPanel">
+        <div class="collapsible-header" onclick="toggleCollapsible('diagBody', this)">
+          <span>Developer Diagnostics</span>
+          <span class="collapsible-toggle">▼</span>
+        </div>
+        <div id="diagBody" class="collapsible-body">
+          <div class="diagnostics-grid" id="diagnosticsGrid"></div>
+        </div>
+      </div>
+
+      <!-- Panic Wipe -->
+      <div class="panic-wipe-section">
+        <button class="btn-danger" id="panicWipeBtn" onclick="initPanicWipe()">⚠ Emergency Wipe — Purge All Local Data</button>
+      </div>
+
+      <div id="panicModal" class="panic-modal hidden">
+        <div class="panic-modal-content">
+          <h3>Confirm Emergency Wipe</h3>
+          <p class="warning">This will permanently delete:</p>
+          <ul class="panic-list">
+            <li>All vault records</li>
+            <li>All encrypted file data</li>
+            <li>All share links</li>
+            <li>All access logs</li>
+            <li>All session state</li>
+            <li>Wallet session</li>
+            <li>Mock testnet balances</li>
+          </ul>
+          <p class="warning">This action cannot be undone.</p>
+          <div class="panic-actions">
+            <button class="btn btn-danger" onclick="confirmPanicWipe()">Confirm Wipe</button>
+            <button class="btn btn-secondary" onclick="cancelPanicWipe()">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- INBOX TAB                                                          -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <div id="inbox-tab" class="tab-content hidden">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Inbound Relay</span>
+          <span class="form-hint" id="inboxCount"></span>
+        </div>
+        <div id="inboxHint" class="inbox-hint">
+          <div class="empty-state">
+            <span class="empty-state-icon">📨</span>
+            <p class="empty-state-title">Connect wallet to view inbox</p>
+            <p class="empty-state-desc">Files shared to your wallet address will appear here.</p>
+          </div>
+        </div>
+        <div id="inboxList" class="history-list"></div>
+      </div>
+    </div>
+
+    <!-- STATUS (legacy compat) -->
+    <div id="status" class="status hidden"></div>
+
+    <!-- FOOTER (legacy tag kept for JS compat) -->
+    <footer class="app-footer">
+      <p>Secured by <strong>CipherLayer</strong> · AES-256-GCM · Client-Side Only · By <a href="https://github.com/linhthuy1414" target="_blank">linhthuy1414</a></p>
+    </footer>
+  </div>
+
+  <!-- Hidden element for upload provider label (JS compat) -->
+  <span id="uploadProviderLabel" style="display:none;"></span>
+
+  <!-- Shelby SDK bridge (Vite-bundled ES module) -->
+  <script type="module" src="/src/sdk-bridge.js"></script>
+
+  <script src="matrix.js"></script>
+  <script src="testnet-config.js"></script>
+  <script src="vault-utils.js"></script>
+  <script src="wallet-utils.js"></script>
+  <script src="aptos-service.js"></script>
+  <script src="shelby-service.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
