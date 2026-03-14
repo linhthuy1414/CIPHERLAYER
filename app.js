@@ -54,16 +54,28 @@ function switchTab(tab) {
 
 // ─── Restore wallet session + testnet init on load ───────────────────────────
 (function initApp() {
+  console.log('[CipherLayer] initApp: booting...');
+  console.log('[CipherLayer] Globals check:', {
+    TESTNET_CONFIG: typeof TESTNET_CONFIG !== 'undefined',
+    WalletSession: typeof WalletSession !== 'undefined',
+    AptosService: typeof AptosService !== 'undefined',
+    ShelbyService: typeof ShelbyService !== 'undefined',
+    VaultHistory: typeof VaultHistory !== 'undefined',
+  });
   setTimeout(() => {
+    console.log('[CipherLayer] initApp: Petra detection =', typeof AptosService !== 'undefined' ? AptosService.isPetraInstalled() : 'AptosService N/A');
+    console.log('[CipherLayer] initApp: stored session =', typeof WalletSession !== 'undefined' ? !!WalletSession.getSession() : 'WalletSession N/A');
     renderWalletUI();
     initTestnetUI();
     // Restore balances if wallet was connected
     const session = WalletSession.getSession();
     if (session) {
+      console.log('[CipherLayer] initApp: restoring session for', session.walletType, session.isReal ? '[REAL]' : '[MOCK]');
       refreshBalances();
     }
   }, 100);
 })();
+
 
 function initTestnetUI() {
   // Set provider label
@@ -858,20 +870,50 @@ function renderWalletSessionInfo() {
 
 async function connectWallet(walletType) {
   const meta = WALLET_META[walletType];
+  console.log('[connectWallet] called with walletType =', walletType);
   showStatus(`> Connecting to ${meta.name}...`, 'info');
 
   try {
     let session;
-    // Try real Petra if available
+
+    // ─── Real Petra path ─────────────────────────────────────────────────────
     if (walletType === 'petra' && AptosService.shouldUseRealPetra()) {
+      console.log('[connectWallet] Using REAL Petra connect');
       const result = await AptosService.connectPetra();
       session = WalletSession.connectReal(walletType, result.address);
+
+      // ─── Post-connect network check (real Petra only) ──────────────────────
+      try {
+        const netCheck = await AptosService.verifyTestnetNetwork();
+        if (!netCheck.ok) {
+          console.warn('[connectWallet] Network mismatch after connect:', netCheck);
+          showStatus(
+            `> ⚠ NETWORK_MISMATCH: Petra is on "${netCheck.network}" but CipherLayer requires "${netCheck.expected}". ` +
+            `Switch network in Petra settings.`, 'error'
+          );
+          // Still connected — don't disconnect, just warn
+        }
+      } catch (netErr) {
+        console.warn('[connectWallet] Network check error (non-fatal):', netErr.message);
+      }
+
+    // ─── Petra requested but not installed — show clear instruction ──────────
+    } else if (walletType === 'petra' && TESTNET_CONFIG.FEATURE_FLAGS.USE_REAL_PETRA && !AptosService.isPetraInstalled()) {
+      console.warn('[connectWallet] Petra selected but NOT installed, falling back to mock');
+      showStatus(
+        '> ⚠ Petra wallet extension not detected. Install from https://petra.app then refresh. Using mock wallet for now.', 'error'
+      );
+      session = await WalletSession.connect(walletType);
+
+    // ─── Mock / non-Petra path ───────────────────────────────────────────────
     } else {
-      // Mock for non-Petra or when Petra not installed
+      console.log('[connectWallet] Using MOCK connect for', walletType);
       session = await WalletSession.connect(walletType);
     }
 
     const isReal = session.isReal ? '[REAL]' : '[MOCK]';
+    console.log('[connectWallet] Success:', isReal, 'address =', session.address?.slice(0, 10) + '...');
+
     AccessLog.add(ACTION_TYPES.WALLET_CONNECTED, {
       message: `${meta.name} wallet connected ${isReal}: ${WalletAdapters.shortenAddress(session.address)}`
     });
@@ -883,7 +925,12 @@ async function connectWallet(walletType) {
     refreshBalances();
     setTimeout(hideStatus, 3000);
   } catch (e) {
-    showStatus(`> Failed to connect ${meta.name}: ${e.message}`, 'error');
+    console.error('[connectWallet] FAILED:', e);
+    const msg = e.message || 'Unknown wallet connection error';
+    AccessLog.add(ACTION_TYPES.WALLET_CONNECTED, {
+      message: `CONNECT_FAILED: ${meta.name} — ${msg}`
+    });
+    showStatus(`> CONNECT_FAILED: ${msg}`, 'error');
   }
 }
 
