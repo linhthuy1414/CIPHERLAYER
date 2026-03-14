@@ -1,8 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // aptos-service.js — Aptos Testnet Integration for CipherLayer
-// Real Petra wallet connection via window.aptos API
+// Real wallet connection via window.aptos (Aptos Wallet Standard)
 // Real APT balance checking via Aptos REST API
-// Fallback to mock when Petra is not installed
+// Fallback to mock when no compatible wallet is installed
+//
+// NOTE: window.petra is DEPRECATED and removed. Only window.aptos is used.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const AptosService = (() => {
@@ -10,62 +12,59 @@ const AptosService = (() => {
   const _warn = (msg, ...args) => console.warn(`[AptosService] ${msg}`, ...args);
   const _err = (msg, ...args) => console.error(`[AptosService] ${msg}`, ...args);
 
-  // ─── Petra Wallet Detection ─────────────────────────────────────────────────
+  // ─── Wallet Detection (Aptos Wallet Standard only) ──────────────────────────
+  // Modern Petra (and other Aptos wallets) inject window.aptos.
+  // window.petra is DEPRECATED — do NOT use it.
   function isPetraInstalled() {
     const hasWindow = typeof window !== 'undefined';
-    const hasAptos = hasWindow && 'aptos' in window;
-    const hasPetra = hasWindow && 'petra' in window;
-    _log('isPetraInstalled check:', {
-      hasWindow,
-      hasWindowAptos: hasAptos,
-      hasWindowPetra: hasPetra,
-      aptosType: hasAptos ? typeof window.aptos : 'N/A',
-    });
-    // Petra can inject as window.aptos OR window.petra
-    return hasAptos || hasPetra;
+    const hasAptos = hasWindow && typeof window.aptos === 'object' && window.aptos !== null;
+    _log('isPetraInstalled:', { hasWindow, hasWindowAptos: hasAptos });
+    return hasAptos;
   }
 
-  // Get the actual provider object (Petra may be at window.aptos or window.petra)
+  // Return the Aptos wallet provider — ONLY window.aptos
   function _getProvider() {
     if (typeof window === 'undefined') return null;
-    // Prefer window.aptos (standard Petra location)
-    if (window.aptos) return window.aptos;
-    // Fallback: window.petra (some versions use this)
-    if (window.petra) return window.petra;
+    if (typeof window.aptos === 'object' && window.aptos !== null) return window.aptos;
     return null;
   }
 
   function shouldUseRealPetra() {
     const useReal = TESTNET_CONFIG.FEATURE_FLAGS.USE_REAL_PETRA;
     const installed = isPetraInstalled();
-    _log('shouldUseRealPetra:', { featureFlag: useReal, installed, result: useReal && installed });
-    return useReal && installed;
+    const result = useReal && installed;
+    _log('shouldUseRealPetra:', { featureFlag: useReal, installed, result });
+    return result;
   }
 
-  // ─── Real Petra Connect ─────────────────────────────────────────────────────
-  // Uses window.aptos.connect() — the Petra wallet extension API
+  // ─── Real Wallet Connect ────────────────────────────────────────────────────
+  // Uses window.aptos.connect() — the Aptos Wallet Standard
   async function connectPetra() {
-    _log('connectPetra called');
+    _log('connectPetra: starting...');
 
     const provider = _getProvider();
     if (!provider) {
-      _err('No Petra provider found. window.aptos =', typeof window.aptos, ', window.petra =', typeof window.petra);
+      _err('connectPetra: window.aptos is not available.', {
+        windowType: typeof window,
+        aptosType: typeof window !== 'undefined' ? typeof window.aptos : 'N/A',
+      });
       throw new Error(
-        'PETRA_NOT_INSTALLED: Petra wallet extension not detected. ' +
-        'Please install Petra from https://petra.app and refresh the page.'
+        'PETRA_NOT_INSTALLED: No Aptos wallet detected (window.aptos is missing). ' +
+        'Install Petra from https://petra.app and refresh this page.'
       );
     }
 
-    _log('Petra provider found, calling connect()...');
+    _log('connectPetra: provider found, calling window.aptos.connect()...');
     try {
       const response = await provider.connect();
-      _log('Petra connect() response:', {
-        address: response.address ? response.address.slice(0, 10) + '...' : 'MISSING',
-        publicKey: response.publicKey ? 'present' : 'absent',
+      _log('connectPetra: connect() returned:', {
+        address: response?.address ? response.address.slice(0, 12) + '...' : 'MISSING',
+        publicKey: response?.publicKey ? 'present' : 'absent',
+        keys: response ? Object.keys(response) : [],
       });
 
       if (!response || !response.address) {
-        throw new Error('Petra returned empty response — no address received.');
+        throw new Error('Wallet returned empty response — no address received.');
       }
 
       return {
@@ -74,45 +73,51 @@ const AptosService = (() => {
         isReal: true
       };
     } catch (err) {
-      _err('Petra connect() failed:', err);
-      // Provide clear, user-friendly error messages
-      const msg = err.message || 'Unknown error';
+      _err('connectPetra: connect() failed:', err.message || err);
+      const msg = err.message || String(err);
+
       if (msg.includes('User rejected') || msg.includes('rejected') || msg.includes('denied')) {
-        throw new Error('CONNECTION_REJECTED: You declined the Petra connection request. Please try again and approve the connection.');
+        throw new Error('CONNECTION_REJECTED: You declined the wallet connection request. Try again and approve.');
       }
       if (msg.includes('PETRA_NOT_INSTALLED')) {
-        throw err; // re-throw our own error
+        throw err;
       }
-      throw new Error('PETRA_CONNECT_FAILED: ' + msg);
+      if (msg.includes('deprecated') || msg.includes('no longer supported')) {
+        throw new Error(
+          'WALLET_API_DEPRECATED: The wallet provider returned a deprecation error. ' +
+          'Please update your Petra extension to the latest version.'
+        );
+      }
+      throw new Error('WALLET_CONNECT_FAILED: ' + msg);
     }
   }
 
-  // ─── Real Petra Disconnect ──────────────────────────────────────────────────
+  // ─── Disconnect ─────────────────────────────────────────────────────────────
   async function disconnectPetra() {
     const provider = _getProvider();
     if (provider) {
       try {
         await provider.disconnect();
-        _log('Petra disconnected');
+        _log('disconnectPetra: done');
       } catch (e) {
-        _warn('Petra disconnect error (ignored):', e.message);
+        _warn('disconnectPetra error (ignored):', e.message);
       }
     }
   }
 
-  // ─── Real Petra Sign Message ────────────────────────────────────────────────
+  // ─── Sign Message ───────────────────────────────────────────────────────────
   // Uses window.aptos.signMessage() for session authentication
   async function signMessagePetra(message) {
     const provider = _getProvider();
     if (!provider) {
-      _err('signMessagePetra: No provider found');
+      _err('signMessagePetra: window.aptos not available');
       throw new Error(
-        'PETRA_NOT_INSTALLED: Petra wallet extension not detected. ' +
-        'Please install Petra from https://petra.app and refresh the page.'
+        'WALLET_NOT_AVAILABLE: No Aptos wallet detected. ' +
+        'Install Petra from https://petra.app and refresh.'
       );
     }
 
-    _log('signMessagePetra: requesting signature...');
+    _log('signMessagePetra: requesting signature via window.aptos.signMessage()...');
     try {
       const nonce = Date.now().toString();
       const response = await provider.signMessage({
@@ -126,12 +131,12 @@ const AptosService = (() => {
         isReal: true
       };
     } catch (err) {
-      _warn('signMessagePetra: user rejected or error:', err.message);
-      throw new Error('User rejected the signature request');
+      _warn('signMessagePetra: rejected or error:', err.message);
+      throw new Error('SIGN_REJECTED: User rejected the signature request.');
     }
   }
 
-  // ─── Get Aptos Account (Real) ───────────────────────────────────────────────
+  // ─── Get Account ────────────────────────────────────────────────────────────
   async function getAccount() {
     const provider = _getProvider();
     if (!provider) {
@@ -140,7 +145,7 @@ const AptosService = (() => {
     }
     try {
       const account = await provider.account();
-      _log('getAccount: got account', account?.address ? account.address.slice(0, 10) + '...' : 'null');
+      _log('getAccount:', account?.address ? account.address.slice(0, 12) + '...' : 'null');
       return account;
     } catch (e) {
       _warn('getAccount failed:', e.message);
@@ -148,21 +153,43 @@ const AptosService = (() => {
     }
   }
 
+  // ─── Validate Aptos Address Format ──────────────────────────────────────────
+  // A valid Aptos address is 0x followed by 1-64 hex chars
+  function _isValidAptosAddress(address) {
+    if (!address || typeof address !== 'string') return false;
+    return /^0x[0-9a-fA-F]{1,64}$/.test(address);
+  }
+
   // ─── APT Balance via Aptos REST API ─────────────────────────────────────────
-  // This is a REAL API call to the Aptos testnet fullnode
+  // REAL API call to the Aptos testnet fullnode.
+  // Only called with a valid address; mock addresses skip the real call.
   async function getAptBalance(address) {
     if (!TESTNET_CONFIG.FEATURE_FLAGS.USE_REAL_APTOS_BALANCE) {
-      _log('getAptBalance: using mock (feature flag off)');
+      _log('getAptBalance: mock mode (flag off)');
       return getMockAptBalance();
     }
 
+    // Guard: don't hit the real API with a random mock address
+    if (!_isValidAptosAddress(address)) {
+      _warn('getAptBalance: address looks invalid, using mock. address =', address?.slice?.(0, 20));
+      return getMockAptBalance();
+    }
+
+    const url = `${TESTNET_CONFIG.APTOS.NODE_URL}/accounts/${address}/resources`;
+    _log('getAptBalance: fetching', url.slice(0, 70) + '...');
+
     try {
-      const url = `${TESTNET_CONFIG.APTOS.NODE_URL}/accounts/${address}/resources`;
-      _log('getAptBalance: fetching', url.slice(0, 60) + '...');
       const response = await fetch(url);
 
+      if (response.status === 404) {
+        // Account not found on testnet — might be new or unfunded
+        _log('getAptBalance: account not found (404) — returning 0');
+        return 0;
+      }
+
       if (!response.ok) {
-        _warn('Balance API error:', response.status);
+        const body = await response.text().catch(() => '');
+        _warn('getAptBalance: API error', response.status, body.slice(0, 200));
         return getMockAptBalance();
       }
 
@@ -172,7 +199,7 @@ const AptosService = (() => {
       );
 
       if (!coinStore) {
-        _log('getAptBalance: account exists but no APT coin store');
+        _log('getAptBalance: account exists but no APT coin store — returning 0');
         return 0;
       }
 
@@ -181,7 +208,7 @@ const AptosService = (() => {
       _log('getAptBalance:', balance.toFixed(4), 'APT');
       return balance;
     } catch (err) {
-      _warn('Balance fetch failed:', err.message);
+      _warn('getAptBalance: fetch error:', err.message);
       return getMockAptBalance();
     }
   }
@@ -194,7 +221,7 @@ const AptosService = (() => {
       const stored = localStorage.getItem(MOCK_APT_KEY);
       if (stored !== null) return parseFloat(stored);
     } catch { }
-    return 10.0; // Default mock: 10 APT
+    return 10.0;
   }
 
   function setMockAptBalance(amount) {
@@ -209,7 +236,7 @@ const AptosService = (() => {
     return { ok: true, code: null, label: 'READY' };
   }
 
-  // ─── Get Explorer Link ──────────────────────────────────────────────────────
+  // ─── Explorer Links ─────────────────────────────────────────────────────────
   function getExplorerAccountLink(address) {
     return `${TESTNET_CONFIG.APTOS.EXPLORER_URL}/account/${address}?network=testnet`;
   }
@@ -218,7 +245,7 @@ const AptosService = (() => {
     return `${TESTNET_CONFIG.APTOS.EXPLORER_URL}/txn/${txHash}?network=testnet`;
   }
 
-  // ─── Check Network (Petra) ──────────────────────────────────────────────────
+  // ─── Check Network ─────────────────────────────────────────────────────────
   async function checkNetwork() {
     const provider = _getProvider();
     if (!provider) {
@@ -227,35 +254,30 @@ const AptosService = (() => {
     }
     try {
       const network = await provider.network();
-      _log('checkNetwork: Petra reports network =', network);
+      _log('checkNetwork: wallet reports network =', network);
       return network; // "Testnet", "Mainnet", "Devnet"
     } catch (e) {
-      _warn('checkNetwork failed:', e.message);
+      _warn('checkNetwork error:', e.message);
       return null;
     }
   }
 
   // ─── Verify Network Matches Testnet ─────────────────────────────────────────
-  // Returns: { ok, network, expected, code? }
   async function verifyTestnetNetwork() {
     const network = await checkNetwork();
     if (network === null) {
-      // Petra not installed or can't detect → skip check
-      _log('verifyTestnetNetwork: skipping (no provider or network unknown)');
+      _log('verifyTestnetNetwork: skipped (no provider or network unknown)');
       return { ok: true, network: 'unknown', expected: TESTNET_CONFIG.APTOS.EXPECTED_NETWORK };
     }
     const expected = TESTNET_CONFIG.APTOS.EXPECTED_NETWORK;
-    if (network.toLowerCase() !== expected.toLowerCase()) {
-      _warn('Network mismatch:', network, '≠', expected);
-      return {
-        ok: false,
-        network,
-        expected,
-        code: TESTNET_ERRORS.NETWORK_MISMATCH
-      };
+    // Handle Petra returning either a string ("Testnet") or an object
+    const networkName = typeof network === 'string' ? network : (network.name || network.networkName || String(network));
+    if (networkName.toLowerCase() !== expected.toLowerCase()) {
+      _warn('verifyTestnetNetwork: MISMATCH', networkName, '≠', expected);
+      return { ok: false, network: networkName, expected, code: TESTNET_ERRORS.NETWORK_MISMATCH };
     }
-    _log('verifyTestnetNetwork: OK (', network, ')');
-    return { ok: true, network, expected };
+    _log('verifyTestnetNetwork: OK (', networkName, ')');
+    return { ok: true, network: networkName, expected };
   }
 
   return {

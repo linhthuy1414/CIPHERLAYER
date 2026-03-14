@@ -1413,12 +1413,28 @@ async function refreshBalances() {
   const addr = WalletSession.getAddress();
   if (!addr) return;
 
+  const session = WalletSession.getSession();
+  const isRealSession = session && session.isReal === true;
+  console.log('[refreshBalances] addr =', addr.slice(0, 12) + '...', 'isReal =', isRealSession);
+
+  // For mock sessions, always use mock balances — don't hit real APIs
+  // with randomly-generated addresses (causes 400 errors)
+  if (!isRealSession) {
+    console.log('[refreshBalances] Mock session — using mock balances');
+    cachedAptBalance = AptosService.getMockAptBalance();
+    cachedShelbyBalance = ShelbyService.getMockBalance();
+    lastBalanceCheck = Date.now();
+    renderBalanceUI();
+    return;
+  }
+
   try {
     cachedAptBalance = await AptosService.getAptBalance(addr);
     AccessLog.add(ACTION_TYPES.APT_BALANCE_CHECKED, {
       message: `APT balance: ${cachedAptBalance.toFixed(4)} APT`
     });
-  } catch {
+  } catch (e) {
+    console.warn('[refreshBalances] APT balance error:', e.message);
     cachedAptBalance = AptosService.getMockAptBalance();
   }
 
@@ -1427,13 +1443,15 @@ async function refreshBalances() {
     AccessLog.add(ACTION_TYPES.SHELBY_BALANCE_CHECKED, {
       message: `ShelbyUSD balance: ${cachedShelbyBalance.toFixed(2)} ShelbyUSD`
     });
-  } catch {
+  } catch (e) {
+    console.warn('[refreshBalances] Shelby balance error:', e.message);
     cachedShelbyBalance = ShelbyService.getMockBalance();
   }
 
   lastBalanceCheck = Date.now();
   renderBalanceUI();
 }
+
 
 function renderBalanceUI() {
   const aptEl = document.getElementById('aptBalanceDisplay');
