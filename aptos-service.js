@@ -1,10 +1,19 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 // aptos-service.js — Aptos Testnet Integration for CipherLayer
-// Real wallet connection via window.aptos (Aptos Wallet Standard)
-// Real APT balance checking via Aptos REST API
-// Fallback to mock when no compatible wallet is installed
 //
-// NOTE: window.petra is DEPRECATED and removed. Only window.aptos is used.
+// APPROACH: Official Aptos Wallet Adapter (@aptos-labs/wallet-adapter-core)
+//
+// The wallet adapter is initialized in sdk-bridge.js (ES module) and exposed
+// as window._AptosWalletAdapter. This file wraps it in a clean API for use
+// by app.js and shelby-service.js.
+//
+// WHY this approach:
+//   - Official, Aptos-recommended way to implement AIP-62 Wallet Standard
+//   - Handles wallet discovery timing, reconnection, account/network change events
+//   - No direct window.aptos or window.petra — those are fully deprecated
+//   - Maintained by the Aptos Labs team
+//
+// BALANCE: APT balance is fetched via the Aptos REST API (no wallet involved).
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const AptosService = (() => {
@@ -12,21 +21,30 @@ const AptosService = (() => {
   const _warn = (msg, ...args) => console.warn(`[AptosService] ${msg}`, ...args);
   const _err = (msg, ...args) => console.error(`[AptosService] ${msg}`, ...args);
 
-  // ─── Wallet Detection (Aptos Wallet Standard only) ──────────────────────────
-  // Modern Petra (and other Aptos wallets) inject window.aptos.
-  // window.petra is DEPRECATED — do NOT use it.
-  function isPetraInstalled() {
-    const hasWindow = typeof window !== 'undefined';
-    const hasAptos = hasWindow && typeof window.aptos === 'object' && window.aptos !== null;
-    _log('isPetraInstalled:', { hasWindow, hasWindowAptos: hasAptos });
-    return hasAptos;
+  // ─── Adapter Access ─────────────────────────────────────────────────────────
+  // The adapter is created in sdk-bridge.js (which runs as a <script type="module">).
+  // Module scripts are deferred, so the adapter MAY not be ready when this file
+  // first loads. All public functions access it at CALL-TIME, not load-time.
+  function _getAdapter() {
+    return window._AptosWalletAdapter || null;
   }
 
-  // Return the Aptos wallet provider — ONLY window.aptos
-  function _getProvider() {
-    if (typeof window === 'undefined') return null;
-    if (typeof window.aptos === 'object' && window.aptos !== null) return window.aptos;
-    return null;
+  // ─── Wallet Detection ──────────────────────────────────────────────────────
+  function isPetraInstalled() {
+    const adapter = _getAdapter();
+    if (!adapter) {
+      _log('isPetraInstalled: adapter not ready yet');
+      return false;
+    }
+    const wallets = adapter.wallets || [];
+    const petra = wallets.find(w => w.name === 'Petra');
+    _log('isPetraInstalled:', {
+      adapterReady: true,
+      totalWallets: wallets.length,
+      walletNames: wallets.map(w => w.name),
+      petraFound: !!petra,
+    });
+    return !!petra;
   }
 
   function shouldUseRealPetra() {
@@ -37,141 +55,165 @@ const AptosService = (() => {
     return result;
   }
 
-  // ─── Real Wallet Connect ────────────────────────────────────────────────────
-  // Uses window.aptos.connect() — the Aptos Wallet Standard
+  // ─── Connect via Wallet Adapter ────────────────────────────────────────────
   async function connectPetra() {
-    _log('connectPetra: starting...');
+    _log('connectPetra: starting via official Wallet Adapter...');
 
-    const provider = _getProvider();
-    if (!provider) {
-      _err('connectPetra: window.aptos is not available.', {
-        windowType: typeof window,
-        aptosType: typeof window !== 'undefined' ? typeof window.aptos : 'N/A',
-      });
+    const adapter = _getAdapter();
+    if (!adapter) {
+      _err('connectPetra: Wallet Adapter not initialized (window._AptosWalletAdapter is null)');
       throw new Error(
-        'PETRA_NOT_INSTALLED: No Aptos wallet detected (window.aptos is missing). ' +
+        'ADAPTER_NOT_READY: Aptos Wallet Adapter not loaded. ' +
+        'The page may still be initializing — try refreshing.'
+      );
+    }
+
+    // Check if Petra is among discovered wallets
+    const wallets = adapter.wallets || [];
+    const petra = wallets.find(w => w.name === 'Petra');
+    if (!petra) {
+      _err('connectPetra: Petra not found among discovered wallets:', wallets.map(w => w.name));
+      throw new Error(
+        'PETRA_NOT_INSTALLED: Petra wallet not detected. ' +
         'Install Petra from https://petra.app and refresh this page.'
       );
     }
 
-    _log('connectPetra: provider found, calling window.aptos.connect()...');
+    _log('connectPetra: Petra found, calling adapter.connect("Petra")...');
     try {
-      const response = await provider.connect();
-      _log('connectPetra: connect() returned:', {
-        address: response?.address ? response.address.slice(0, 12) + '...' : 'MISSING',
-        publicKey: response?.publicKey ? 'present' : 'absent',
-        keys: response ? Object.keys(response) : [],
+      await adapter.connect('Petra');
+
+      const account = adapter.account;
+      _log('connectPetra: connected! account:', {
+        address: account?.address ? String(account.address).slice(0, 14) + '...' : 'MISSING',
+        publicKey: account?.publicKey ? 'present' : 'absent',
       });
 
-      if (!response || !response.address) {
-        throw new Error('Wallet returned empty response — no address received.');
+      if (!account || !account.address) {
+        throw new Error('WALLET_EMPTY_RESPONSE: Wallet connected but returned no account info.');
       }
+
+      // Normalize address to string (Aptos SDK may return AccountAddress object)
+      const address = typeof account.address === 'string'
+        ? account.address
+        : String(account.address);
 
       return {
-        address: response.address,
-        publicKey: response.publicKey || null,
+        address,
+        publicKey: account.publicKey || null,
         isReal: true
       };
+
     } catch (err) {
-      _err('connectPetra: connect() failed:', err.message || err);
+      _err('connectPetra: connect failed:', err.message || err);
       const msg = err.message || String(err);
 
-      if (msg.includes('User rejected') || msg.includes('rejected') || msg.includes('denied')) {
-        throw new Error('CONNECTION_REJECTED: You declined the wallet connection request. Try again and approve.');
-      }
-      if (msg.includes('PETRA_NOT_INSTALLED')) {
+      // Don't wrap our own errors
+      if (msg.includes('PETRA_NOT_INSTALLED') || msg.includes('ADAPTER_NOT_READY') || msg.includes('WALLET_EMPTY_RESPONSE')) {
         throw err;
       }
-      if (msg.includes('deprecated') || msg.includes('no longer supported')) {
-        throw new Error(
-          'WALLET_API_DEPRECATED: The wallet provider returned a deprecation error. ' +
-          'Please update your Petra extension to the latest version.'
-        );
+      if (msg.includes('User rejected') || msg.includes('rejected') || msg.includes('denied')) {
+        throw new Error('CONNECTION_REJECTED: You declined the wallet connection request. Try again and approve.');
       }
       throw new Error('WALLET_CONNECT_FAILED: ' + msg);
     }
   }
 
-  // ─── Disconnect ─────────────────────────────────────────────────────────────
+  // ─── Disconnect ────────────────────────────────────────────────────────────
   async function disconnectPetra() {
-    const provider = _getProvider();
-    if (provider) {
-      try {
-        await provider.disconnect();
-        _log('disconnectPetra: done');
-      } catch (e) {
-        _warn('disconnectPetra error (ignored):', e.message);
-      }
+    const adapter = _getAdapter();
+    if (!adapter) return;
+    try {
+      await adapter.disconnect();
+      _log('disconnectPetra: done');
+    } catch (e) {
+      _warn('disconnectPetra error (ignored):', e.message);
     }
   }
 
-  // ─── Sign Message ───────────────────────────────────────────────────────────
-  // Uses window.aptos.signMessage() for session authentication
+  // ─── Sign Message ──────────────────────────────────────────────────────────
   async function signMessagePetra(message) {
-    const provider = _getProvider();
-    if (!provider) {
-      _err('signMessagePetra: window.aptos not available');
-      throw new Error(
-        'WALLET_NOT_AVAILABLE: No Aptos wallet detected. ' +
-        'Install Petra from https://petra.app and refresh.'
-      );
+    const adapter = _getAdapter();
+    if (!adapter || !adapter.connected) {
+      throw new Error('WALLET_NOT_CONNECTED: Connect your wallet before signing.');
     }
 
-    _log('signMessagePetra: requesting signature via window.aptos.signMessage()...');
+    _log('signMessagePetra: requesting signature...');
     try {
       const nonce = Date.now().toString();
-      const response = await provider.signMessage({
-        message: message,
-        nonce: nonce
-      });
+      const response = await adapter.signMessage({ message, nonce });
       _log('signMessagePetra: signature received');
       return {
-        signature: response.signature,
+        signature: response.signature || response.fullMessage || 'signed',
         fullMessage: response.fullMessage || message,
         isReal: true
       };
     } catch (err) {
-      _warn('signMessagePetra: rejected or error:', err.message);
-      throw new Error('SIGN_REJECTED: User rejected the signature request.');
+      _warn('signMessagePetra error:', err.message);
+      const msg = err.message || String(err);
+      if (msg.includes('rejected') || msg.includes('denied')) {
+        throw new Error('SIGN_REJECTED: You declined the signature request.');
+      }
+      throw new Error('SIGN_FAILED: ' + msg);
     }
   }
 
-  // ─── Get Account ────────────────────────────────────────────────────────────
-  async function getAccount() {
-    const provider = _getProvider();
-    if (!provider) {
-      _log('getAccount: no provider');
-      return null;
+  // ─── Sign and Submit Transaction ───────────────────────────────────────────
+  // Used by shelby-service.js for on-chain blob registration.
+  async function signAndSubmitTransaction(payload) {
+    const adapter = _getAdapter();
+    if (!adapter || !adapter.connected) {
+      throw new Error('WALLET_NOT_CONNECTED: Connect your wallet before submitting transactions.');
     }
+
+    _log('signAndSubmitTransaction: submitting via Wallet Adapter...');
     try {
-      const account = await provider.account();
-      _log('getAccount:', account?.address ? account.address.slice(0, 12) + '...' : 'null');
-      return account;
-    } catch (e) {
-      _warn('getAccount failed:', e.message);
-      return null;
+      const response = await adapter.signAndSubmitTransaction({ data: payload });
+      _log('signAndSubmitTransaction: success, hash =', response?.hash ? response.hash.slice(0, 16) + '...' : 'unknown');
+      return response;
+    } catch (err) {
+      _err('signAndSubmitTransaction failed:', err.message);
+      const msg = err.message || String(err);
+      if (msg.includes('rejected') || msg.includes('denied')) {
+        throw new Error('TRANSACTION_REJECTED: You declined the transaction.');
+      }
+      throw new Error('TRANSACTION_FAILED: ' + msg);
     }
   }
 
-  // ─── Validate Aptos Address Format ──────────────────────────────────────────
-  // A valid Aptos address is 0x followed by 1-64 hex chars
+  // ─── Get Account ───────────────────────────────────────────────────────────
+  async function getAccount() {
+    const adapter = _getAdapter();
+    if (!adapter) {
+      _log('getAccount: adapter not ready');
+      return null;
+    }
+    const account = adapter.account;
+    if (!account) {
+      _log('getAccount: no connected account');
+      return null;
+    }
+    const address = typeof account.address === 'string' ? account.address : String(account.address);
+    _log('getAccount:', address.slice(0, 14) + '...');
+    return { address, publicKey: account.publicKey || null };
+  }
+
+  // ─── Validate Aptos Address Format ─────────────────────────────────────────
   function _isValidAptosAddress(address) {
     if (!address || typeof address !== 'string') return false;
     return /^0x[0-9a-fA-F]{1,64}$/.test(address);
   }
 
-  // ─── APT Balance via Aptos REST API ─────────────────────────────────────────
-  // REAL API call to the Aptos testnet fullnode.
-  // Only called with a valid address; mock addresses skip the real call.
+  // ─── APT Balance via Aptos REST API ────────────────────────────────────────
+  // Uses the fullnode REST API directly — no wallet interaction needed.
   async function getAptBalance(address) {
     if (!TESTNET_CONFIG.FEATURE_FLAGS.USE_REAL_APTOS_BALANCE) {
       _log('getAptBalance: mock mode (flag off)');
       return getMockAptBalance();
     }
 
-    // Guard: don't hit the real API with a random mock address
     if (!_isValidAptosAddress(address)) {
-      _warn('getAptBalance: address looks invalid, using mock. address =', address?.slice?.(0, 20));
+      _warn('getAptBalance: invalid address format, using mock. addr =', address?.slice?.(0, 20));
       return getMockAptBalance();
     }
 
@@ -182,7 +224,6 @@ const AptosService = (() => {
       const response = await fetch(url);
 
       if (response.status === 404) {
-        // Account not found on testnet — might be new or unfunded
         _log('getAptBalance: account not found (404) — returning 0');
         return 0;
       }
@@ -213,7 +254,7 @@ const AptosService = (() => {
     }
   }
 
-  // ─── Mock APT Balance (fallback) ────────────────────────────────────────────
+  // ─── Mock APT Balance ──────────────────────────────────────────────────────
   const MOCK_APT_KEY = 'cipherlayer_mock_apt_balance';
 
   function getMockAptBalance() {
@@ -228,7 +269,7 @@ const AptosService = (() => {
     localStorage.setItem(MOCK_APT_KEY, amount.toString());
   }
 
-  // ─── Check APT Sufficiency ──────────────────────────────────────────────────
+  // ─── Check APT Sufficiency ─────────────────────────────────────────────────
   function checkAptSufficiency(balance) {
     if (balance <= 0) return { ok: false, code: TESTNET_ERRORS.MISSING_APT_TESTNET, label: 'MISSING' };
     if (balance < TESTNET_CONFIG.THRESHOLDS.MIN_APT_FOR_GAS) return { ok: false, code: TESTNET_ERRORS.MISSING_APT_TESTNET, label: 'INSUFFICIENT' };
@@ -236,7 +277,7 @@ const AptosService = (() => {
     return { ok: true, code: null, label: 'READY' };
   }
 
-  // ─── Explorer Links ─────────────────────────────────────────────────────────
+  // ─── Explorer Links ────────────────────────────────────────────────────────
   function getExplorerAccountLink(address) {
     return `${TESTNET_CONFIG.APTOS.EXPLORER_URL}/account/${address}?network=testnet`;
   }
@@ -247,37 +288,37 @@ const AptosService = (() => {
 
   // ─── Check Network ─────────────────────────────────────────────────────────
   async function checkNetwork() {
-    const provider = _getProvider();
-    if (!provider) {
-      _log('checkNetwork: no provider');
+    const adapter = _getAdapter();
+    if (!adapter || !adapter.connected) {
+      _log('checkNetwork: not connected');
       return null;
     }
-    try {
-      const network = await provider.network();
-      _log('checkNetwork: wallet reports network =', network);
-      return network; // "Testnet", "Mainnet", "Devnet"
-    } catch (e) {
-      _warn('checkNetwork error:', e.message);
+    const netInfo = adapter.network;
+    if (!netInfo) {
+      _log('checkNetwork: no network info available');
       return null;
     }
+    // Wallet Adapter returns NetworkInfo { name, chainId, url }
+    const name = netInfo.name || (typeof netInfo === 'string' ? netInfo : null);
+    _log('checkNetwork:', name, netInfo.chainId ? '(chainId: ' + netInfo.chainId + ')' : '');
+    return name;
   }
 
-  // ─── Verify Network Matches Testnet ─────────────────────────────────────────
+  // ─── Verify Network Matches Testnet ────────────────────────────────────────
   async function verifyTestnetNetwork() {
     const network = await checkNetwork();
     if (network === null) {
-      _log('verifyTestnetNetwork: skipped (no provider or network unknown)');
+      _log('verifyTestnetNetwork: skipped (not connected or no network info)');
       return { ok: true, network: 'unknown', expected: TESTNET_CONFIG.APTOS.EXPECTED_NETWORK };
     }
     const expected = TESTNET_CONFIG.APTOS.EXPECTED_NETWORK;
-    // Handle Petra returning either a string ("Testnet") or an object
-    const networkName = typeof network === 'string' ? network : (network.name || network.networkName || String(network));
-    if (networkName.toLowerCase() !== expected.toLowerCase()) {
-      _warn('verifyTestnetNetwork: MISMATCH', networkName, '≠', expected);
-      return { ok: false, network: networkName, expected, code: TESTNET_ERRORS.NETWORK_MISMATCH };
+    // Compare case-insensitively: adapter may return "testnet" or "Testnet"
+    if (network.toLowerCase() !== expected.toLowerCase()) {
+      _warn('verifyTestnetNetwork: MISMATCH', network, '≠', expected);
+      return { ok: false, network, expected, code: TESTNET_ERRORS.NETWORK_MISMATCH };
     }
-    _log('verifyTestnetNetwork: OK (', networkName, ')');
-    return { ok: true, network: networkName, expected };
+    _log('verifyTestnetNetwork: OK (', network, ')');
+    return { ok: true, network, expected };
   }
 
   return {
@@ -286,6 +327,7 @@ const AptosService = (() => {
     connectPetra,
     disconnectPetra,
     signMessagePetra,
+    signAndSubmitTransaction,
     getAccount,
     getAptBalance,
     getMockAptBalance,

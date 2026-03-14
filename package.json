@@ -9,8 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@shelby-protocol/sdk": "latest",
     "@aptos-labs/ts-sdk": "latest",
+    "@aptos-labs/wallet-adapter-core": "^8.5.0",
+    "@shelby-protocol/sdk": "latest",
     "buffer": "^6.0.3"
   },
   "devDependencies": {

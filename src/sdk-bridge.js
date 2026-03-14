@@ -5,8 +5,11 @@
 // It runs after Vite processes the npm imports and makes the SDK
 // available to the existing vanilla JS scripts through window._ShelbySDK.
 //
+// It also initializes the Aptos Wallet Adapter (AIP-62 Wallet Standard)
+// and exposes it via window._AptosWalletAdapter for use by aptos-service.js.
+//
 // The existing script tags (shelby-service.js, app.js, etc.) remain as
-// regular scripts. They access the SDK via window._ShelbySDK at call-time
+// regular scripts. They access the SDK/adapter via globals at call-time
 // (not at load-time), so the deferred module execution is safe.
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -15,6 +18,30 @@ import { Buffer } from 'buffer';
 // Polyfill Buffer for browser (Shelby SDK uses it for file encoding)
 if (typeof window !== 'undefined' && !window.Buffer) {
   window.Buffer = Buffer;
+}
+
+// ─── Aptos Wallet Adapter (AIP-62 Wallet Standard) ───────────────────────────
+// This replaces all direct window.aptos / window.petra usage.
+// WalletCore handles wallet discovery via the Wallet Standard protocol.
+import { WalletCore } from '@aptos-labs/wallet-adapter-core';
+
+try {
+  // Create the wallet adapter — discovers Petra (and any other AIP-62 wallets)
+  // optInWallets: list of wallet names to discover via the standard
+  // dappConfig: configure network to ensure wallets connect to testnet
+  const walletAdapter = new WalletCore(
+    ['Petra'],           // optInWallets: wallets we want to discover
+    { network: 'testnet' }, // dappConfig: hint wallets to use testnet
+    true                 // disableTelemetry
+  );
+
+  window._AptosWalletAdapter = walletAdapter;
+
+  console.log('[SDK Bridge] ✓ Aptos Wallet Adapter initialized');
+  console.log('[SDK Bridge]   Discovered wallets:', walletAdapter.wallets.map(w => w.name));
+} catch (err) {
+  console.warn('[SDK Bridge] ✗ Failed to init Wallet Adapter:', err.message);
+  window._AptosWalletAdapter = null;
 }
 
 // ─── Dynamic SDK Loading ─────────────────────────────────────────────────────

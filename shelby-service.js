@@ -137,14 +137,10 @@ const ShelbyService = (() => {
     const sdk = _getSDK();
     const apiKey = _getApiKey();
 
-    // Verify wallet is connected (we need it for on-chain registration)
-    if (!window.aptos) {
-      throw new Error('Petra wallet not found. Install Petra and connect it first.');
-    }
-
-    const account = await window.aptos.account();
+    // Verify wallet is connected via Wallet Standard (NOT window.aptos, which is deprecated)
+    const account = await AptosService.getAccount();
     if (!account || !account.address) {
-      throw new Error('Wallet not connected. Connect Petra wallet first.');
+      throw new Error('Wallet not connected. Connect your Aptos wallet first.');
     }
 
     // Generate a unique blob name (not the original filename, since data is encrypted)
@@ -185,8 +181,9 @@ const ShelbyService = (() => {
 
     if (onProgress) onProgress(40);
 
-    // Sign and submit via Petra (the user will see a Petra popup)
-    const txResult = await window.aptos.signAndSubmitTransaction({ data: payload });
+    // Sign and submit via official Aptos Wallet Adapter (AIP-62)
+    // The user will see the wallet popup for approval.
+    const txResult = await AptosService.signAndSubmitTransaction(payload);
 
     if (onProgress) onProgress(55);
 

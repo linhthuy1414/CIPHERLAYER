@@ -877,42 +877,35 @@ async function connectWallet(walletType) {
     let session;
 
     // ─── Real Petra path ─────────────────────────────────────────────────────
-    if (walletType === 'petra' && AptosService.shouldUseRealPetra()) {
-      console.log('[connectWallet] Using REAL Petra connect');
+    if (walletType === 'petra' && TESTNET_CONFIG.FEATURE_FLAGS.USE_REAL_PETRA) {
+      // Rule 7: Do NOT silently fall back to mock when user explicitly picks Petra.
+      // If Petra is not installed, connectPetra() will throw PETRA_NOT_INSTALLED.
+      console.log('[connectWallet] Attempting REAL Petra connect via Wallet Adapter');
       const result = await AptosService.connectPetra();
       session = WalletSession.connectReal(walletType, result.address);
 
-      // ─── Post-connect network check (real Petra only) ──────────────────────
+      // ─── Post-connect network check ────────────────────────────────────────
       try {
         const netCheck = await AptosService.verifyTestnetNetwork();
         if (!netCheck.ok) {
-          console.warn('[connectWallet] Network mismatch after connect:', netCheck);
+          console.warn('[connectWallet] Network mismatch:', netCheck);
           showStatus(
-            `> ⚠ NETWORK_MISMATCH: Petra is on "${netCheck.network}" but CipherLayer requires "${netCheck.expected}". ` +
-            `Switch network in Petra settings.`, 'error'
+            `> ⚠ NETWORK_MISMATCH: Wallet is on "${netCheck.network}" but CipherLayer requires "${netCheck.expected}". ` +
+            `Switch network in your wallet settings.`, 'error'
           );
-          // Still connected — don't disconnect, just warn
         }
       } catch (netErr) {
         console.warn('[connectWallet] Network check error (non-fatal):', netErr.message);
       }
 
-    // ─── Petra requested but not installed — show clear instruction ──────────
-    } else if (walletType === 'petra' && TESTNET_CONFIG.FEATURE_FLAGS.USE_REAL_PETRA && !AptosService.isPetraInstalled()) {
-      console.warn('[connectWallet] Petra selected but NOT installed, falling back to mock');
-      showStatus(
-        '> ⚠ Petra wallet extension not detected. Install from https://petra.app then refresh. Using mock wallet for now.', 'error'
-      );
-      session = await WalletSession.connect(walletType);
-
-    // ─── Mock / non-Petra path ───────────────────────────────────────────────
+    // ─── Mock path (Phantom, Backpack — non-Petra wallets) ───────────────────
     } else {
       console.log('[connectWallet] Using MOCK connect for', walletType);
       session = await WalletSession.connect(walletType);
     }
 
     const isReal = session.isReal ? '[REAL]' : '[MOCK]';
-    console.log('[connectWallet] Success:', isReal, 'address =', session.address?.slice(0, 10) + '...');
+    console.log('[connectWallet] Success:', isReal, 'address =', session.address?.slice(0, 12) + '...');
 
     AccessLog.add(ACTION_TYPES.WALLET_CONNECTED, {
       message: `${meta.name} wallet connected ${isReal}: ${WalletAdapters.shortenAddress(session.address)}`
@@ -927,12 +920,24 @@ async function connectWallet(walletType) {
   } catch (e) {
     console.error('[connectWallet] FAILED:', e);
     const msg = e.message || 'Unknown wallet connection error';
+
+    // Provide actionable user messages based on error code
+    let userMsg = msg;
+    if (msg.includes('PETRA_NOT_INSTALLED')) {
+      userMsg = '❌ Petra wallet not detected. Install it from https://petra.app then refresh this page.';
+    } else if (msg.includes('CONNECTION_REJECTED')) {
+      userMsg = '❌ Connection declined. Click "Connect Wallet" and approve the request.';
+    } else if (msg.includes('ADAPTER_NOT_READY')) {
+      userMsg = '❌ Wallet adapter still loading. Please wait a moment and try again.';
+    }
+
     AccessLog.add(ACTION_TYPES.WALLET_CONNECTED, {
       message: `CONNECT_FAILED: ${meta.name} — ${msg}`
     });
-    showStatus(`> CONNECT_FAILED: ${msg}`, 'error');
+    showStatus(`> ${userMsg}`, 'error');
   }
 }
+
 
 async function doSignSession() {
   const session = WalletSession.getSession();

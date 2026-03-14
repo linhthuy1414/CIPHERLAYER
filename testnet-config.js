@@ -61,7 +61,7 @@ const TESTNET_CONFIG = Object.freeze({
   // ─── Feature Flags ──────────────────────────────────────────────────────────
   // Toggle real vs mock for each subsystem independently
   FEATURE_FLAGS: {
-    USE_REAL_PETRA: true,              // use window.aptos if Petra installed
+    USE_REAL_PETRA: true,              // use Aptos Wallet Adapter (AIP-62) for Petra
     USE_REAL_APTOS_BALANCE: true,      // fetch APT balance via REST API
     USE_REAL_SHELBY: false,            // ⚠ false = mock upload (no real Shelby SDK yet)
     USE_REAL_SHELBY_BALANCE: false,    // ⚠ false = mock ShelbyUSD balance
