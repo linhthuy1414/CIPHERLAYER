@@ -53,6 +53,10 @@ export default defineConfig({
     },
   },
 
+  optimizeDeps: {
+    exclude: ['@shelby-protocol/sdk', '@shelby-protocol/clay-codes']
+  },
+
   // Make env vars starting with VITE_ available via import.meta.env
   envPrefix: 'VITE_',
 

@@ -29,21 +29,39 @@ const AptosService = (() => {
     return window._AptosWalletAdapter || null;
   }
 
+  // Chờ SDK bridge load xong (vì esm.sh bundle khá nặng có thể mất 1-3s)
+  async function awaitSDK() {
+    if (window._ShelbySDK && window._ShelbySDK.ready) return window._ShelbySDK;
+    return new Promise(resolve => {
+        let attempts = 0;
+        const interval = setInterval(() => {
+            attempts++;
+            if (window._ShelbySDK && window._ShelbySDK.ready) {
+                clearInterval(interval);
+                resolve(window._ShelbySDK);
+            } else if (attempts >= 50) { // 5s timeout
+                clearInterval(interval);
+                resolve(null);
+            }
+        }, 100);
+    });
+  }
+
   // ─── Wallet Detection ──────────────────────────────────────────────────────
   function isPetraInstalled() {
     const adapter = _getAdapter();
     if (!adapter) {
-      _log('isPetraInstalled: adapter not ready yet');
+      // _log('isPetraInstalled: adapter not ready yet');
       return false;
     }
     const wallets = adapter.wallets || [];
     const petra = wallets.find(w => w.name === 'Petra');
-    _log('isPetraInstalled:', {
-      adapterReady: true,
-      totalWallets: wallets.length,
-      walletNames: wallets.map(w => w.name),
-      petraFound: !!petra,
-    });
+    // _log('isPetraInstalled:', {
+    //   adapterReady: true,
+    //   totalWallets: wallets.length,
+    //   walletNames: wallets.map(w => w.name),
+    //   petraFound: !!petra,
+    // });
     return !!petra;
   }
 
@@ -51,7 +69,7 @@ const AptosService = (() => {
     const useReal = TESTNET_CONFIG.FEATURE_FLAGS.USE_REAL_PETRA;
     const installed = isPetraInstalled();
     const result = useReal && installed;
-    _log('shouldUseRealPetra:', { featureFlag: useReal, installed, result });
+    // _log('shouldUseRealPetra:', { featureFlag: useReal, installed, result });
     return result;
   }
 
@@ -133,8 +151,22 @@ const AptosService = (() => {
 
   // ─── Sign Message ──────────────────────────────────────────────────────────
   async function signMessagePetra(message) {
-    const adapter = _getAdapter();
-    if (!adapter || !adapter.connected) {
+    let adapter = _getAdapter();
+    console.log('[AptosService] signMessagePetra called. adapter:', !!adapter, 'account:', adapter?.account);
+    
+    // Auto-reconnect if adapter exists but account is null (happens after page reload)
+    if (adapter && !adapter.account) {
+      _log('signMessagePetra: adapter.account is null, attempting auto-reconnect...');
+      try {
+        await adapter.connect('Petra');
+        _log('signMessagePetra: auto-reconnect done, account:', adapter.account);
+      } catch (reconErr) {
+        _warn('signMessagePetra: auto-reconnect failed:', reconErr.message);
+      }
+    }
+
+    if (!adapter || !adapter.account) {
+      console.error('[AptosService] Cannot sign: adapter is missing or account not found after reconnect attempt.');
       throw new Error('WALLET_NOT_CONNECTED: Connect your wallet before signing.');
     }
 
@@ -162,11 +194,27 @@ const AptosService = (() => {
   // Used by shelby-service.js for on-chain blob registration.
   async function signAndSubmitTransaction(payload) {
     const adapter = _getAdapter();
-    if (!adapter || !adapter.connected) {
+    if (!adapter || !adapter.account) {
       throw new Error('WALLET_NOT_CONNECTED: Connect your wallet before submitting transactions.');
     }
 
     _log('signAndSubmitTransaction: submitting via Wallet Adapter...');
+
+    // ─── Đảm bảo toàn bộ numeric arguments biến thành string ─────────────────
+    if (payload.functionArguments) {
+        payload.functionArguments = payload.functionArguments.map(arg => {
+            if (typeof arg === 'number' || typeof arg === 'bigint') return String(arg);
+            return arg;
+        });
+    }
+    if (payload.arguments) {
+        payload.arguments = payload.arguments.map(arg => {
+            if (typeof arg === 'number' || typeof arg === 'bigint') return String(arg);
+            return arg;
+        });
+    }
+    console.log('[AptosService] Final Payload to Adapter:', payload);
+
     try {
       const response = await adapter.signAndSubmitTransaction({ data: payload });
       _log('signAndSubmitTransaction: success, hash =', response?.hash ? response.hash.slice(0, 16) + '...' : 'unknown');
@@ -204,8 +252,11 @@ const AptosService = (() => {
     return /^0x[0-9a-fA-F]{1,64}$/.test(address);
   }
 
-  // ─── APT Balance via Aptos REST API ────────────────────────────────────────
-  // Uses the fullnode REST API directly — no wallet interaction needed.
+  // ─── APT Balance via view function ──────────────────────────────────────────
+  // PRIMARY: POST /v1/view with 0x1::coin::balance<AptosCoin>
+  // This works during Aptos' CoinStore→FungibleAsset migration phase where
+  // GET /resources returns [] but the view function returns the real balance.
+  // Proven by audit: address 0x66188c...cd547 returns 2097317200 (20.97 APT).
   async function getAptBalance(address) {
     if (!TESTNET_CONFIG.FEATURE_FLAGS.USE_REAL_APTOS_BALANCE) {
       _log('getAptBalance: mock mode (flag off)');
@@ -217,41 +268,74 @@ const AptosService = (() => {
       return getMockAptBalance();
     }
 
-    const url = `${TESTNET_CONFIG.APTOS.NODE_URL}/accounts/${address}/resources`;
-    _log('getAptBalance: fetching', url.slice(0, 70) + '...');
+    _log('getAptBalance: checking', address.slice(0, 14) + '...');
 
+    // ── Method 1: View function (proven to work on testnet) ─────────────────
     try {
-      const response = await fetch(url);
+      const viewUrl = `${TESTNET_CONFIG.APTOS.NODE_URL}/view`;
+      _log('getAptBalance: trying view function POST', viewUrl);
+      const viewRes = await fetch(viewUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          function: '0x1::coin::balance',
+          type_arguments: ['0x1::aptos_coin::AptosCoin'],
+          arguments: [address]
+        })
+      });
 
-      if (response.status === 404) {
-        _log('getAptBalance: account not found (404) — returning 0');
-        return 0;
+      if (viewRes.ok) {
+        const viewData = await viewRes.json();
+        if (Array.isArray(viewData) && viewData.length > 0) {
+          const raw = parseInt(viewData[0], 10);
+          const balance = raw / Math.pow(10, TESTNET_CONFIG.APTOS.NATIVE_TOKEN.decimals);
+          _log('getAptBalance (view fn):', balance.toFixed(4), 'APT (raw:', viewData[0], ')');
+          return balance;
+        }
+      } else {
+        const errText = await viewRes.text().catch(() => '');
+        _warn('getAptBalance: view function returned', viewRes.status, errText.slice(0, 200));
       }
-
-      if (!response.ok) {
-        const body = await response.text().catch(() => '');
-        _warn('getAptBalance: API error', response.status, body.slice(0, 200));
-        return getMockAptBalance();
-      }
-
-      const resources = await response.json();
-      const coinStore = resources.find(r =>
-        r.type === TESTNET_CONFIG.APTOS.NATIVE_TOKEN.coinStoreType
-      );
-
-      if (!coinStore) {
-        _log('getAptBalance: account exists but no APT coin store — returning 0');
-        return 0;
-      }
-
-      const rawBalance = parseInt(coinStore.data.coin.value, 10);
-      const balance = rawBalance / Math.pow(10, TESTNET_CONFIG.APTOS.NATIVE_TOKEN.decimals);
-      _log('getAptBalance:', balance.toFixed(4), 'APT');
-      return balance;
-    } catch (err) {
-      _warn('getAptBalance: fetch error:', err.message);
-      return getMockAptBalance();
+    } catch (viewErr) {
+      _warn('getAptBalance: view function error:', viewErr.message);
     }
+
+    // ── Method 2: Aptos TS SDK (fallback) ───────────────────────────────────
+    try {
+      const sdk = await awaitSDK();
+      if (sdk && sdk.ready && sdk.Aptos) {
+        const aptosClient = new sdk.Aptos(new sdk.AptosConfig({ network: sdk.Network.TESTNET }));
+        const rawBalance = await aptosClient.getAccountCoinAmount({ accountAddress: address, coinType: '0x1::aptos_coin::AptosCoin' });
+        const balance = parseInt(rawBalance, 10) / Math.pow(10, TESTNET_CONFIG.APTOS.NATIVE_TOKEN.decimals);
+        _log('getAptBalance (SDK fallback):', balance.toFixed(4), 'APT');
+        return balance;
+      }
+    } catch (sdkErr) {
+      _warn('getAptBalance: SDK fallback error:', sdkErr.message);
+    }
+
+    // ── Method 3: Legacy CoinStore resource (last resort) ───────────────────
+    try {
+      const url = `${TESTNET_CONFIG.APTOS.NODE_URL}/accounts/${address}/resources`;
+      const response = await fetch(url);
+      if (response.ok) {
+        const resources = await response.json();
+        const coinStore = resources.find(r =>
+          r.type === TESTNET_CONFIG.APTOS.NATIVE_TOKEN.coinStoreType
+        );
+        if (coinStore) {
+          const raw = parseInt(coinStore.data.coin.value, 10);
+          const balance = raw / Math.pow(10, TESTNET_CONFIG.APTOS.NATIVE_TOKEN.decimals);
+          _log('getAptBalance (CoinStore):', balance.toFixed(4), 'APT');
+          return balance;
+        }
+      }
+    } catch (restErr) {
+      _warn('getAptBalance: REST fallback error:', restErr.message);
+    }
+
+    _warn('getAptBalance: all methods failed, returning 0');
+    return 0;
   }
 
   // ─── Mock APT Balance ──────────────────────────────────────────────────────
@@ -289,7 +373,7 @@ const AptosService = (() => {
   // ─── Check Network ─────────────────────────────────────────────────────────
   async function checkNetwork() {
     const adapter = _getAdapter();
-    if (!adapter || !adapter.connected) {
+    if (!adapter || !adapter.account) {
       _log('checkNetwork: not connected');
       return null;
     }

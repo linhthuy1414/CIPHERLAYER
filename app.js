@@ -31,8 +31,8 @@ function switchTab(tab) {
     renderAccessLog();
     renderDiagnostics();
   }
-  if (tab === 'inbox') {
-    renderInbox();
+  if (tab === 'explorer') {
+    renderExplorer();
   }
   if (tab === 'upload') {
     renderUploadReadiness();
@@ -62,19 +62,81 @@ function switchTab(tab) {
     ShelbyService: typeof ShelbyService !== 'undefined',
     VaultHistory: typeof VaultHistory !== 'undefined',
   });
-  setTimeout(() => {
-    console.log('[CipherLayer] initApp: Petra detection =', typeof AptosService !== 'undefined' ? AptosService.isPetraInstalled() : 'AptosService N/A');
+
+  // Helper: wait until the wallet adapter has discovered Petra (max ~3s)
+  function waitForPetraAdapter(maxMs = 3000) {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const check = () => {
+        const adapter = window._AptosWalletAdapter;
+        if (adapter && adapter.wallets && adapter.wallets.some(w => w.name === 'Petra')) {
+          resolve(true);
+          return;
+        }
+        if (Date.now() - start > maxMs) {
+          resolve(false);
+          return;
+        }
+        setTimeout(check, 150);
+      };
+      check();
+    });
+  }
+
+  setTimeout(async () => {
     console.log('[CipherLayer] initApp: stored session =', typeof WalletSession !== 'undefined' ? !!WalletSession.getSession() : 'WalletSession N/A');
     renderWalletUI();
     initTestnetUI();
+
     // Restore balances if wallet was connected
     const session = WalletSession.getSession();
     if (session) {
       console.log('[CipherLayer] initApp: restoring session for', session.walletType, session.isReal ? '[REAL]' : '[MOCK]');
+
+      // ── Auto-reconnect real wallet adapter on page reload ──────────────
+      // WalletCore is freshly created on each page load (sdk-bridge.js),
+      // so adapter.account is null even though localStorage has a saved session.
+      // We must call adapter.connect() again to sync the adapter state.
+      if (session.isReal && session.walletType === 'petra') {
+        console.log('[CipherLayer] initApp: waiting for Petra adapter discovery...');
+        const adapterReady = await waitForPetraAdapter(3000);
+        
+        if (!adapterReady) {
+          console.warn('[CipherLayer] initApp: Petra adapter not found after 3s, clearing stale session');
+          WalletSession.disconnect();
+          renderWalletUI();
+          showStatus('> Petra wallet not detected. Please install/enable Petra and reconnect.', 'error');
+          setTimeout(hideStatus, 5000);
+          return;
+        }
+
+        console.log('[CipherLayer] initApp: Petra found, re-connecting adapter...');
+        try {
+          const result = await AptosService.connectPetra();
+          console.log('[CipherLayer] initApp: Petra adapter reconnected ✓ address:', result.address?.slice(0, 14) + '...');
+          // Update session address in case it changed (e.g. user switched accounts)
+          if (result.address !== session.address) {
+            console.warn('[CipherLayer] initApp: address changed! old:', session.address?.slice(0, 14), 'new:', result.address?.slice(0, 14));
+            WalletSession.connectReal(session.walletType, result.address);
+            renderWalletUI();
+          }
+        } catch (reconnErr) {
+          console.warn('[CipherLayer] initApp: Petra reconnect failed:', reconnErr.message);
+          // If reconnect fails (e.g. Petra locked, user rejected), clear the stale session
+          console.log('[CipherLayer] initApp: clearing stale session');
+          WalletSession.disconnect();
+          renderWalletUI();
+          showStatus('> Wallet session expired. Please reconnect.', 'error');
+          setTimeout(hideStatus, 4000);
+          return; // Don't try to refresh balances
+        }
+      }
+
       refreshBalances();
     }
-  }, 100);
+  }, 200);
 })();
+
 
 
 function initTestnetUI() {
@@ -83,6 +145,7 @@ function initTestnetUI() {
   if (provLabel) {
     provLabel.textContent = 'UPLOAD: ' + ShelbyService.getProviderLabel().toUpperCase();
   }
+  updateApiKeyUI();
   // Set faucet links
   const aptFaucet = document.getElementById('aptFaucetLink');
   const shelbyFaucet = document.getElementById('shelbyFaucetLink');
@@ -92,6 +155,42 @@ function initTestnetUI() {
   AccessLog.add(ACTION_TYPES.TESTNET_MODE_ENABLED, {
     message: `Testnet mode: Aptos=${TESTNET_CONFIG.FEATURE_FLAGS.USE_REAL_PETRA ? 'REAL' : 'MOCK'} Shelby=${TESTNET_CONFIG.FEATURE_FLAGS.USE_REAL_SHELBY ? 'REAL' : 'MOCK'}`
   });
+}
+
+// ─── API Key Management ──────────────────────────────────────────────────────
+function updateApiKeyUI() {
+  const statusEl = document.getElementById('apiKeyStatus');
+  const inputEl = document.getElementById('shelbyApiKeyInput');
+  if (!statusEl || !inputEl) return;
+  
+  if (TESTNET_CONFIG.SHELBY.API_KEY) {
+    statusEl.innerHTML = '<span style="color:var(--terminal-green);">✓ API Key Loaded</span>';
+    inputEl.value = '•'.repeat(20); // Masked
+  } else {
+    statusEl.innerHTML = '<span style="color:var(--terminal-red);">✗ Missing API Key. Uploads will fail.</span>';
+    inputEl.value = '';
+  }
+}
+
+function saveApiKey() {
+  const inputEl = document.getElementById('shelbyApiKeyInput');
+  if (!inputEl) return;
+  const val = inputEl.value.trim();
+  if (val && !val.startsWith('•')) {
+    localStorage.setItem('cipherlayer_shelby_api_key', val);
+    TESTNET_CONFIG.SHELBY.API_KEY = val;
+    updateApiKeyUI();
+    showStatus('> API Key saved.', 'info');
+  } else if (!val) {
+    clearApiKey();
+  }
+}
+
+function clearApiKey() {
+  localStorage.removeItem('cipherlayer_shelby_api_key');
+  TESTNET_CONFIG.SHELBY.API_KEY = '';
+  updateApiKeyUI();
+  showStatus('> API Key cleared.', 'info');
 }
 
 // ─── Drop zone (multi-file) ──────────────────────────────────────────────────
@@ -366,6 +465,19 @@ async function checkUploadReadiness(totalFileSize) {
       if (!netCheck.ok) {
         issues.push({ code: TESTNET_ERRORS.NETWORK_MISMATCH, msg: `Petra is on ${netCheck.network}, expected ${netCheck.expected}. Switch network in Petra.`, fatal: true });
       }
+    }
+  }
+
+  // Check API Key
+  if (TESTNET_CONFIG.FEATURE_FLAGS.USE_REAL_SHELBY && !TESTNET_CONFIG.SHELBY.API_KEY) {
+    issues.push({ code: 'MISSING_API_KEY', msg: 'Shelby API Key is missing. Please enter it in the top Configuration panel.', fatal: true });
+    
+    // Highlight the API key panel to guide the user
+    const panel = document.getElementById('apiKeyPanel');
+    if (panel) {
+      panel.style.boxShadow = '0 0 10px var(--terminal-red)';
+      setTimeout(() => panel.style.boxShadow = '', 3000);
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   }
 
@@ -941,7 +1053,12 @@ async function connectWallet(walletType) {
 
 async function doSignSession() {
   const session = WalletSession.getSession();
-  if (!session) return;
+  if (!session) {
+    console.error('[doSignSession] No session found');
+    return;
+  }
+
+  console.log(`[doSignSession] Triggered for wallet: ${session.walletType}. Real: ${session.isReal}`);
 
   AccessLog.add(ACTION_TYPES.SIGNATURE_REQUESTED, {
     message: `Signature requested for ${WALLET_META[session.walletType].name} session`
@@ -954,9 +1071,12 @@ async function doSignSession() {
     // Use real Petra sign if real session
     if (session.isReal && session.walletType === 'petra' && AptosService.isPetraInstalled()) {
       const msg = `CipherLayer Session Auth\nTimestamp: ${Date.now()}\nWallet: ${session.address}`;
+      console.log('[doSignSession] Calling signMessagePetra...');
       const result = await AptosService.signMessagePetra(msg);
+      console.log('[doSignSession] Signature done:', result);
       updated = WalletSession.signSessionReal(result.signature);
     } else {
+      console.log('[doSignSession] Calling mock signSession...');
       updated = await WalletSession.signSession();
     }
 
@@ -969,11 +1089,13 @@ async function doSignSession() {
     showStatus(`> Session signed ${isReal}. Status: AUTHORIZED.`, 'info');
     setTimeout(hideStatus, 3000);
   } catch (e) {
+    console.error('[doSignSession] FAILED:', e);
+    const msg = e.message || 'Unknown error during sign operation';
     AccessLog.add(ACTION_TYPES.SIGNATURE_REJECTED, {
-      message: `Signature rejected by ${WALLET_META[session.walletType].name}`
+      message: `Signature failed/rejected by ${WALLET_META[session.walletType].name}: ${msg}`
     });
-    showStatus('> SIGNATURE_REJECTED: User declined the signing request.', 'error');
-    setTimeout(hideStatus, 4000);
+    showStatus(`> SIGNATURE_FAILED: ${msg}`, 'error');
+    setTimeout(hideStatus, 5000);
   }
 }
 
@@ -1016,87 +1138,88 @@ function copyWalletAddress() {
 // INBOX / SHARED WITH ME
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function renderInbox() {
-  const list = document.getElementById('inboxList');
-  const hint = document.getElementById('inboxHint');
-  const countEl = document.getElementById('inboxCount');
-
+function renderExplorer() {
   const currentAddr = WalletSession.getAddress();
+  const notConnected = document.getElementById('explorerNotConnected');
+  const content = document.getElementById('explorerContent');
+  const statusEl = document.getElementById('explorerStatus');
+  const listEl = document.getElementById('explorerBlobsList');
+  const balEl = document.getElementById('explorerShelbyBal');
+  
+  const extBtn = document.getElementById('openExternalExplorer');
+  if (extBtn) {
+    extBtn.onclick = () => {
+       if (currentAddr) {
+          window.open(`${TESTNET_CONFIG.SHELBY.EXPLORER_URL}/testnet/account/${currentAddr}/blobs`, '_blank');
+       } else {
+          window.open(TESTNET_CONFIG.SHELBY.EXPLORER_URL, '_blank');
+       }
+    };
+  }
 
   if (!currentAddr) {
-    hint.classList.remove('hidden');
-    hint.innerHTML = '<p class="empty-state">> CONNECT WALLET TO LOAD INBOUND RELAYS_</p>';
-    list.innerHTML = '';
-    countEl.textContent = '';
+    notConnected.classList.remove('hidden');
+    content.classList.add('hidden');
     return;
   }
 
-  // Find all wallet-gated records addressed to current wallet
-  const allRecords = VaultHistory.getAll();
-  const inboxRecords = allRecords.filter(r =>
-    r.accessMode === 'wallet-gated' &&
-    r.recipientWallet === currentAddr
-  );
+  notConnected.classList.add('hidden');
+  content.classList.remove('hidden');
+  statusEl.innerHTML = '<span style="color:var(--terminal-dim)">Loading on-chain data for </span><code>' + WalletAdapters.shortenAddress(currentAddr) + '</code>...';
+  listEl.innerHTML = '';
 
-  if (inboxRecords.length === 0) {
-    hint.classList.remove('hidden');
-    hint.innerHTML = '<p class="empty-state">> NO INBOUND RELAYS FOR THIS WALLET_</p>';
-    list.innerHTML = '';
-    countEl.textContent = '';
-    return;
-  }
+  // Run fetches in parallel
+  Promise.all([
+    ShelbyService.getBalance(currentAddr).catch(e => 0),
+    ShelbyService.getAccountBlobs(currentAddr).catch(e => null)
+  ]).then(([bal, blobs]) => {
+    balEl.textContent = bal.toFixed(4);
 
-  hint.classList.add('hidden');
-  countEl.textContent = `[${inboxRecords.length} RELAYS]`;
-
-  list.innerHTML = inboxRecords.map(r => {
-    const expired = ExpirationUtil.isExpired(r);
-    const expiryLabel = ExpirationUtil.getExpiryLabel(r);
-    const isRevoked = r.status === 'revoked';
-    const isConsumed = r.status === 'consumed' || (r.expiration === 'one-download' && r.downloadCount >= 1);
-    const isInactive = isRevoked || isConsumed || expired;
-    
-    let statusClass, statusLabel;
-    if (isRevoked) { statusClass = 'revoked'; statusLabel = 'REVOKED'; }
-    else if (isConsumed) { statusClass = 'consumed'; statusLabel = 'CONSUMED'; }
-    else if (expired) { statusClass = 'expired'; statusLabel = 'EXPIRED'; }
-    else { statusClass = 'active'; statusLabel = 'ACTIVE'; }
-
-    const sender = r.createdByWallet ? WalletAdapters.shortenAddress(r.createdByWallet) : 'ANONYMOUS';
-
-    let inboxExplorerHtml = '';
-    if (r.blobId) {
-      const url = ShelbyService.getExplorerBlobUrl(r.blobId, r.fileName);
-      inboxExplorerHtml = `<a class="history-action-btn explorer-btn" href="${url}" target="_blank" rel="noopener noreferrer">Explorer</a>`;
+    if (blobs === null) {
+      statusEl.textContent = 'Failed to load Explorer data. Please check API key in Upload tab.';
+      return;
     }
 
-    return `
-      <div class="history-item ${isInactive ? 'expired' : ''}">
+    statusEl.innerHTML = '';
+
+    if (blobs.length === 0) {
+      listEl.innerHTML = '<div style="padding: 16px; text-align: center; color: var(--terminal-dim);">No blobs found on-chain for this address.</div>';
+      return;
+    }
+
+    listEl.innerHTML = blobs.map(b => {
+      // name could be 0xACCOUNT/some_file.txt, so we use blobNameSuffix if present
+      const shortName = b.blobNameSuffix || b.name; 
+      const ownerAddr = typeof b.owner === 'object' ? b.owner.toString() : b.owner;
+      const blobIdStr = ownerAddr + '/' + shortName;
+      const url = ShelbyService.getExplorerBlobUrl(blobIdStr, shortName);
+      const isWritten = b.isWritten ? '<span class="status-badge active">WRITTEN</span>' : '<span class="status-badge expired" style="border-color:orange;color:orange;">PENDING</span>';
+      
+      const createdDate = b.creationMicros ? new Date(Number(b.creationMicros)/1000).toLocaleDateString() : '--';
+      const expiredDate = b.expirationMicros ? new Date(Number(b.expirationMicros)/1000).toLocaleDateString() : '--';
+
+      return `
+      <div class="history-item">
         <div class="history-item-header">
-          <span class="history-item-name" title="${escapeHtml(r.fileName)}">${escapeHtml(r.fileName)}</span>
-          <span class="status-badge ${statusClass}">${statusLabel}</span>
+          <span class="history-item-name" title="${escapeHtml(shortName)}">${escapeHtml(shortName)}</span>
+          ${isWritten}
         </div>
-        <div class="history-item-meta">
-          <span>From: ${sender}</span>
-          <span>${formatSize(r.fileSize)}</span>
-          <span>${new Date(r.createdAt).toLocaleDateString()}</span>
-          <span>${expiryLabel}</span>
-          <span>Wallet-Gated</span>
+        <div class="history-item-meta" style="display:flex; gap:16px;">
+          <span>Size: ${formatSize(b.size)}</span>
+          <span>Created: ${createdDate}</span>
+          <span>Expires: ${expiredDate}</span>
         </div>
         <div class="history-item-actions">
-          <button class="history-action-btn" onclick="openInboxItem('${r.fileId}')">Open and Download</button>
-          <button class="history-action-btn" onclick="copyValue('${r.fileId}')">Copy ID</button>
-          ${inboxExplorerHtml}
+          <a class="history-action-btn explorer-btn" href="${url}" target="_blank" rel="noopener noreferrer">View in Explorer</a>
         </div>
       </div>
-    `;
-  }).join('');
-}
+      `;
+    }).join('');
 
-function openInboxItem(fileId) {
-  switchTab('download');
-  document.getElementById('downloadFileId').value = fileId;
-  showStatus('> Inbound relay loaded. Enter decrypt key to access.', 'info');
+  }).catch(err => {
+    console.error('Explorer error:', err);
+    statusEl.textContent = 'Failed to load Explorer data: ' + err.message;
+  });
 }
 
 // ─── Vault Search & Filter ──────────────────────────────────────────────────

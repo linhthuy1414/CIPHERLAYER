@@ -94,7 +94,7 @@
       <button class="tab active" id="tab-upload" onclick="switchTab('upload')">Upload</button>
       <button class="tab" id="tab-download" onclick="switchTab('download')">Download</button>
       <button class="tab" id="tab-history" onclick="switchTab('history')">Vault</button>
-      <button class="tab" id="tab-inbox" onclick="switchTab('inbox')">Inbox</button>
+      <button class="tab" id="tab-explorer" onclick="switchTab('explorer')">Explorer</button>
     </nav>
 
     <!-- ═══════════════════════════════════════════════════════════════════ -->
@@ -109,6 +109,23 @@
       <div class="hero-cta">
         <h2>Secure File Upload</h2>
         <p>Encrypt files client-side, set access policies, and share them securely — no data leaves your browser unencrypted.</p>
+
+        <!-- Settings / API Key -->
+        <div class="card" id="apiKeyPanel" style="margin-bottom: 16px;">
+          <div class="card-header"><span class="card-title">Shelby API Configuration</span></div>
+          <div class="form-group" style="margin-top:8px;">
+            <label class="form-label">Shelby API Key</label>
+            <span class="form-hint">Required for real testnet uploads. Get it from <a href="https://geomi.dev" target="_blank" style="color:var(--terminal-green);">geomi.dev</a>.</span>
+            <div class="passphrase-row" style="margin-top:4px;">
+              <input type="password" id="shelbyApiKeyInput" placeholder="Enter your Shelby API Client Key..." />
+              <div class="passphrase-actions">
+                <button class="btn-xs" onclick="saveApiKey()" style="background:var(--terminal-green); color:black; font-weight:bold;">Save</button>
+                <button class="btn-xs" onclick="clearApiKey()">Clear</button>
+              </div>
+            </div>
+            <div style="margin-top:4px; font-size:12px;" id="apiKeyStatus"></div>
+          </div>
+        </div>
 
         <!-- 3-step guide -->
         <div class="step-indicator" id="uploadSteps">
@@ -338,22 +355,41 @@
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════════ -->
-    <!-- INBOX TAB                                                          -->
+    <!-- EXPLORER TAB                                                       -->
     <!-- ═══════════════════════════════════════════════════════════════════ -->
-    <div id="inbox-tab" class="tab-content hidden">
+    <div id="explorer-tab" class="tab-content hidden">
       <div class="card">
         <div class="card-header">
-          <span class="card-title">Inbound Relay</span>
-          <span class="form-hint" id="inboxCount"></span>
+          <span class="card-title">Shelby Testnet Explorer</span>
         </div>
-        <div id="inboxHint" class="inbox-hint">
+        
+        <div id="explorerNotConnected" class="inbox-hint">
           <div class="empty-state">
-            <span class="empty-state-icon">📨</span>
-            <p class="empty-state-title">Connect wallet to view inbox</p>
-            <p class="empty-state-desc">Files shared to your wallet address will appear here.</p>
+            <span class="empty-state-icon">🌐</span>
+            <p class="empty-state-title">Connect wallet to view Explorer</p>
+            <p class="empty-state-desc">On-chain data for your connected address will appear here.</p>
           </div>
         </div>
-        <div id="inboxList" class="history-list"></div>
+
+        <div id="explorerContent" class="hidden" style="display:flex; flex-direction:column; gap:16px;">
+          <!-- Balanced overview -->
+          <div class="info-row" style="padding:12px; border-radius:8px; background:rgba(255,255,255,0.05);">
+            <div style="display:flex; flex-direction:column; gap:4px;">
+              <span class="balance-label">ShelbyUSD Balance</span>
+              <span class="balance-value" id="explorerShelbyBal" style="font-size:18px;">--</span>
+            </div>
+            <button class="btn btn-secondary" id="openExternalExplorer" style="font-size:12px;">Open Web Explorer</button>
+          </div>
+
+          <!-- Loading/Error Status -->
+          <div id="explorerStatus" class="form-hint" style="text-align:center;"></div>
+
+          <!-- Blobs List -->
+          <div>
+            <h4 style="margin-bottom: 8px;">On-Chain Blobs</h4>
+            <div id="explorerBlobsList" class="history-list"></div>
+          </div>
+        </div>
       </div>
     </div>
 

@@ -36,7 +36,8 @@ const TESTNET_CONFIG = Object.freeze({
   SHELBY: {
     NETWORK_NAME: 'Shelby Testnet',
     API_URL: _env.SHELBY_API_URL || 'https://api.testnet.shelby.xyz',        // real Shelby testnet RPC
-    API_KEY: _viteEnv.SHELBY_API_KEY || _env.SHELBY_API_KEY || '',            // from .env (VITE_SHELBY_API_KEY)
+    // Priority: 1. localStorage, 2. vite env, 3. node env
+    API_KEY: localStorage.getItem('cipherlayer_shelby_api_key') || _viteEnv.SHELBY_API_KEY || _env.SHELBY_API_KEY || '',
     APTOS_API_KEY: _viteEnv.APTOS_API_KEY || _env.APTOS_API_KEY || '',        // optional, for tx confirmation
     // Real Shelby Explorer — URL patterns:
     //   Blob:    /testnet/blobs/{accountAddress}?blobName={fileName}
@@ -45,7 +46,10 @@ const TESTNET_CONFIG = Object.freeze({
     EXPLORER_URL: 'https://explorer.shelby.xyz',
     TOKEN: {
       symbol: 'ShelbyUSD',
-      decimals: 6
+      decimals: 8,    // confirmed on-chain: Metadata.data.decimals = 8
+      // Fungible Asset metadata object address (not a Coin module)
+      // Discovered via txn 0x2881ff...dc74 payload args + on-chain Metadata query
+      faMetadataAddress: '0x1b18363a9f1fe5e6ebf247daba5cc1c18052bb232efdc4c50f556053922d98e1'
     },
     UPLOAD_COST_PER_MB: 0.1  // estimated cost per MB in ShelbyUSD
   },
@@ -63,8 +67,8 @@ const TESTNET_CONFIG = Object.freeze({
   FEATURE_FLAGS: {
     USE_REAL_PETRA: true,              // use Aptos Wallet Adapter (AIP-62) for Petra
     USE_REAL_APTOS_BALANCE: true,      // fetch APT balance via REST API
-    USE_REAL_SHELBY: false,            // ⚠ false = mock upload (no real Shelby SDK yet)
-    USE_REAL_SHELBY_BALANCE: false,    // ⚠ false = mock ShelbyUSD balance
+    USE_REAL_SHELBY: true,            // ⚠ false = mock upload (no real Shelby SDK yet)
+    USE_REAL_SHELBY_BALANCE: true,    // ⚠ false = mock ShelbyUSD balance
     REQUIRE_WALLET_FOR_UPLOAD: true,   // enforce wallet connection before upload
     REQUIRE_BALANCE_CHECK: true,       // enforce balance check before upload
     REQUIRE_SESSION_SIGN: true,        // enforce signed session before upload
